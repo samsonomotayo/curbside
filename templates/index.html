@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Curbside — live parking spots nearby</title>
+
+  <!-- Leaflet: free, no API key needed -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Work+Sans:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <div id="map"></div>
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      CURBSIDE
+    </div>
+    <div class="live-count" id="live-count">
+      <span class="dot"></span>
+      <span id="live-count-text">0 spots nearby</span>
+    </div>
+  </header>
+
+  <!-- Bottom action sheet -->
+  <div class="sheet" id="sheet">
+    <button class="fab" id="leaving-btn">
+      I'm leaving my spot
+    </button>
+
+    <div class="urgency-panel" id="urgency-panel" hidden>
+      <p class="urgency-label">How soon are you pulling out?</p>
+      <div class="urgency-options">
+        <button class="urgency-btn now" data-urgency="now">
+          <span class="u-title">Right now</span>
+          <span class="u-sub">Leaving this second</span>
+        </button>
+        <button class="urgency-btn soon" data-urgency="soon">
+          <span class="u-title">A few minutes</span>
+          <span class="u-sub">Loading up / finishing up</span>
+        </button>
+      </div>
+      <button class="cancel-btn" id="cancel-btn">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Toast for confirmations / errors -->
+  <div class="toast" id="toast"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

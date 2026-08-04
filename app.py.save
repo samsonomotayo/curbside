@@ -1,0 +1,183 @@
+"""
+Curbside - a Flask backend for a crowdsourced parking-spot app.
+
+Core idea:
+  - Someone leaving a parking spot creates a "spot" (lat/lng + how soon).
+  - Anyone nearby can see it appear on the map in real time (via polling).
+  - The first person to tap "claim" gets it; it disappears for everyone else.
+  - Spots auto-expire after a few minutes so stale pins don't clutter the map.
+
+This file is intentionally simple and commented, since you're learning Python.
+Once this feels familiar, natural next steps are: swap SQLite for Postgres,
+add real user accounts, and replace polling with WebSockets.
+"""
+
+import math
+import sqlite3
+import time
+import uuid
+from pathlib import Path
+
+from flask import Flask, g, jsonify, render_template, request
+
+app = Flask(__name__)
+
+DB_PATH = Path(__file__).parent / "curbside.db"
+
+# How long a spot stays visible before it auto-expires, in seconds.
+SPOT_LIFETIME_SECONDS = 5 * 60  # 5 minutes
+
+
+# ---------------------------------------------------------------------------
+# Database helpers
+# ---------------------------------------------------------------------------
+
+def get_db():
+    """Return a SQLite connection for this request, creating one if needed."""
+    if "db" not in g:
+        g.db = sqlite3.connect(DB_PATH)
+        g.db.row_factory = sqlite3.Row  # lets us access columns by name
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(exception=None):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+def init_db():
+    """Create the spots table if it doesn't exist yet. Runs once at startup."""
+    db = sqlite3.connect(DB_PATH)
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS spots (
+            id TEXT PRIMARY KEY,
+            lat REAL NOT NULL,
+            lng REAL NOT NULL,
+            urgency TEXT NOT NULL,        -- "now" or "soon"
+            note TEXT,
+            created_at REAL NOT NULL,
+            claimed_by TEXT               -- NULL until someone claims it
+        )
+        """
+    )
+    db.commit()
+    db.close()
+
+
+def row_to_dict(row):
+    """Convert a sqlite Row into a plain dict, adding a computed seconds_left."""
+    elapsed = time.time() - row["created_at"]
+    seconds_left = max(0, int(SPOT_LIFETIME_SECONDS - elapsed))
+    return {
+        "id": row["id"],
+        "lat": row["lat"],
+        "lng": row["lng"],
+        "urgency": row["urgency"],
+        "note": row["note"],
+        "seconds_left": seconds_left,
+        "claimed": row["claimed_by"] is not None,
+    }
+
+
+def haversine_meters(lat1, lng1, lat2, lng2):
+    """Distance between two GPS points in meters (used to sort by nearness)."""
+    R = 6371000  # Earth radius in meters
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+# ---------------------------------------------------------------------------
+# Routes: pages
+# ---------------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+
+
+# ---------------------------------------------------------------------------
+# Routes: API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/spots", methods=["GET"])
+def list_spots():
+    """Return all non-expired, unclaimed spots, nearest first if lat/lng given."""
+    db = get_db()
+    cutoff = time.time() - SPOT_LIFETIME_SECONDS
+
+    # Clean up expired spots while we're here (simple, good enough for an MVP)
+    db.execute("DELETE FROM spots WHERE created_at < ?", (cutoff,))
+    db.commit()
+
+    rows = db.execute(
+        "SELECT * FROM spots WHERE claimed_by IS NULL ORDER BY created_at DESC"
+    ).fetchall()
+    spots = [row_to_dict(r) for r in rows]
+
+    # Optional: sort by distance to the requester if they sent their location
+    user_lat = request.args.get("lat", type=float)
+    user_lng = request.args.get("lng", type=float)
+    if user_lat is not None and user_lng is not None:
+        for s, r in zip(spots, rows):
+            s["distance_m"] = round(haversine_meters(user_lat, user_lng, r["lat"], r["lng"]))
+        spots.sort(key=lambda s: s["distance_m"])
+
+    return jsonify(spots)
+
+
+@app.route("/api/spots", methods=["POST"])
+def create_spot():
+    """Create a new spot. Expects JSON: {lat, lng, urgency, note}."""
+    data = request.get_json(force=True)
+
+    lat = data.get("lat")
+    lng = data.get("lng")
+    urgency = data.get("urgency", "soon")
+    note = data.get("note", "")
+
+    if lat is None or lng is None:
+        return jsonify({"error": "lat and lng are required"}), 400
+    if urgency not in ("now", "soon"):
+        return jsonify({"error": "urgency must be 'now' or 'soon'"}), 400
+
+    spot_id = str(uuid.uuid4())
+    db = get_db()
+    db.execute(
+        "INSERT INTO spots (id, lat, lng, urgency, note, created_at, claimed_by) "
+        "VALUES (?, ?, ?, ?, ?, ?, NULL)",
+        (spot_id, lat, lng, urgency, note, time.time()),
+    )
+    db.commit()
+
+    row = db.execute("SELECT * FROM spots WHERE id = ?", (spot_id,)).fetchone()
+    return jsonify(row_to_dict(row)), 201
+
+
+@app.route("/api/spots/<spot_id>/claim", methods=["POST"])
+def claim_spot(spot_id):
+    """Mark a spot as claimed. First request wins; later ones get a 409."""
+    db = get_db()
+    row = db.execute("SELECT * FROM spots WHERE id = ?", (spot_id,)).fetchone()
+
+    if row is None:
+        return jsonify({"error": "spot not found or already expired"}), 404
+    if row["claimed_by"] is not None:
+        return jsonify({"error": "spot already claimed"}), 409
+
+    claimer_id = str(uuid.uuid4())
+    db.execute("UPDATE spots SET claimed_by = ? WHERE id = ?", (claimer_id, spot_id))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+if __name__ == "__main__":
+    init_db()
+    app.run(debug=True, host="0.0.0.0", port=5000)
