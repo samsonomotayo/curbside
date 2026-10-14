@@ -1,0 +1,9 @@
+# Python virtual environment - each person creates their own with
+# "python -m venv venv" and "pip install -r requirements.txt".
+venv/
+
+# Local SQLite database - created automatically by init_db() on startup.
+*.db
+
+# Python's compiled bytecode cache folders.
+__pycache__/
