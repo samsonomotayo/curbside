@@ -30,7 +30,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,  -- unique number, auto-assigned
             lat REAL NOT NULL,                     -- latitude of the spot
             lng REAL NOT NULL,                     -- longitude of the spot
-            urgency TEXT NOT NULL                  -- "now" or "soon"
+            urgency TEXT NOT NULL,                 -- "now" or "soon"
+            claimed_by TEXT                        -- who claimed it; NULL (empty) until claimed
         )
         """
     )
@@ -52,8 +53,9 @@ def list_spots():
     db = sqlite3.connect(DB_PATH)
     # Row factory lets us read columns by name, like r["lat"], instead of r[1].
     db.row_factory = sqlite3.Row
-    # Grab every spot in the table.
-    rows = db.execute("SELECT * FROM spots").fetchall()
+    # Grab every spot nobody has claimed yet. Claimed spots are hidden so
+    # their pins disappear from everyone's map.
+    rows = db.execute("SELECT * FROM spots WHERE claimed_by IS NULL").fetchall()
     db.close()
 
     # Turn each database row into a plain dict the browser can understand.
@@ -103,6 +105,41 @@ def create_spot():
 
     # Send back the new spot. 201 means "Created".
     return jsonify({"id": str(new_id), "lat": lat, "lng": lng, "urgency": urgency}), 201
+
+
+# POST /api/spots/<id>/claim - the browser calls this when someone taps
+# "Claim this spot". <int:spot_id> grabs the number from the URL, so a request
+# to /api/spots/7/claim runs this function with spot_id = 7.
+@app.route("/api/spots/<int:spot_id>/claim", methods=["POST"])
+def claim_spot(spot_id):
+    # We don't have user accounts yet, so we record the claimer's IP address
+    # as a stand-in for "who". Swap this for a real user id once logins exist.
+    claimer = request.remote_addr
+
+    db = sqlite3.connect(DB_PATH)
+    # The important trick: "AND claimed_by IS NULL" means this UPDATE only
+    # changes the row if nobody has claimed it yet. SQLite runs it as one step,
+    # so if two people tap "Claim" at the same moment, only one can win.
+    cur = db.execute(
+        "UPDATE spots SET claimed_by = ? WHERE id = ? AND claimed_by IS NULL",
+        (claimer, spot_id),
+    )
+    db.commit()
+
+    # rowcount tells us how many rows the UPDATE changed: 1 = we won the spot.
+    if cur.rowcount == 1:
+        db.close()
+        return jsonify({"ok": True, "id": str(spot_id)})
+
+    # Nothing changed, so either the spot doesn't exist or someone beat us.
+    # Look it up to tell those two cases apart.
+    exists = db.execute("SELECT 1 FROM spots WHERE id = ?", (spot_id,)).fetchone()
+    db.close()
+    if exists is None:
+        # 404 means "Not Found".
+        return jsonify({"error": "That spot doesn't exist anymore"}), 404
+    # 409 means "Conflict" - the spot was already taken.
+    return jsonify({"error": "Someone beat you to it"}), 409
 
 
 # This only runs when you start the app with "python app.py".
